@@ -1,0 +1,15 @@
+app:
+  name: telegram-bot
+  services:
+    - name: bot
+      type: worker
+      env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+      ports:
+        - port: 8080
+      command: python3 bot.py
+      scale:
+        horizontal:
+          min: 1
+          max: 1
