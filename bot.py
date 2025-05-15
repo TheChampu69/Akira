@@ -1,7 +1,7 @@
 import logging
-import asyncio
 import signal
-from aiohttp import web
+import threading
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import Message
 import requests
@@ -18,18 +18,18 @@ logger = logging.getLogger(__name__)
 # Validate configuration
 Config.validate_config()
 
+# Initialize Flask for health checks
+health_app = Flask(__name__)
+
 # Initialize the bot
-app = Client(
+bot_app = Client(
     "streamup_bot",
     api_id=Config.API_ID,
     api_hash=Config.API_HASH,
     bot_token=Config.BOT_TOKEN
 )
 
-# Create web app for health checks
-web_app = web.Application()
-
-@app.on_message(filters.private & (filters.video | filters.document))
+@bot_app.on_message(filters.private & (filters.video | filters.document))
 async def upload_file(client: Client, message: Message):
     msg = await message.reply_text("Downloading file...")
     path = None
@@ -81,56 +81,37 @@ async def upload_file(client: Client, message: Message):
         if 'path' in locals() and os.path.exists(path):
             os.remove(path)
 
-@app.on_message(filters.command("start") & filters.private)
+@bot_app.on_message(filters.command("start") & filters.private)
 async def start(client, message: Message):
-    await message.reply_text("Send a video or document. I’ll upload it to StreamUP and send back the link.")
+    await message.reply_text("Send a video or document. I'll upload it to StreamUP and send back the link.")
 
 # Health check endpoint
-async def health_check(request):
-    return web.Response(text="OK", status=200)
+@health_app.route('/health')
+def health_check():
+    return 'OK', 200
 
-web_app.router.add_get("/health", health_check)
+def run_health_server():
+    health_app.run(host='0.0.0.0', port=8000, threaded=True)
 
-async def run_web_server():
-    runner = web.AppRunner(web_app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8000)
-    await site.start()
-    logger.info("Health check server started on port 8000")
-
-async def run_bot():
-    await app.start()
-    logger.info("Bot started successfully")
-    await app.idle()
-
-async def shutdown(signal, loop):
-    logger.info(f"Received exit signal {signal.name}...")
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    [task.cancel() for task in tasks]
-    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
-    await asyncio.gather(*tasks, return_exceptions=True)
-    loop.stop()
+def signal_handler(signum, frame):
+    logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
+    bot_app.stop()
+    os._exit(0)
 
 if __name__ == "__main__":
     logger.info("Bot is starting...")
     try:
-        loop = asyncio.get_event_loop()
-        
         # Register signal handlers
-        signals = (signal.SIGTERM, signal.SIGINT)
-        for s in signals:
-            loop.add_signal_handler(
-                s, 
-                lambda s=s: asyncio.create_task(shutdown(s, loop))
-            )
-            
-        # Start both bot and health check server
-        loop.create_task(run_web_server())
-        loop.create_task(run_bot())
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
         
-        loop.run_forever()
+        # Start health check server in a separate thread
+        health_thread = threading.Thread(target=run_health_server)
+        health_thread.daemon = True
+        health_thread.start()
+        
+        # Start the bot
+        logger.info("Starting Telegram bot...")
+        bot_app.run()
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
-    finally:
-        loop.close()
-        logger.info("Successfully shutdown the bot.")
