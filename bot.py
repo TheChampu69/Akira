@@ -1,4 +1,7 @@
 import logging
+import asyncio
+import signal
+from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
 import requests
@@ -22,6 +25,9 @@ app = Client(
     api_hash=Config.API_HASH,
     bot_token=Config.BOT_TOKEN
 )
+
+# Create web app for health checks
+web_app = web.Application()
 
 @app.on_message(filters.private & (filters.video | filters.document))
 async def upload_file(client: Client, message: Message):
@@ -79,9 +85,52 @@ async def upload_file(client: Client, message: Message):
 async def start(client, message: Message):
     await message.reply_text("Send a video or document. I’ll upload it to StreamUP and send back the link.")
 
+# Health check endpoint
+async def health_check(request):
+    return web.Response(text="OK", status=200)
+
+web_app.router.add_get("/health", health_check)
+
+async def run_web_server():
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    logger.info("Health check server started on port 8000")
+
+async def run_bot():
+    await app.start()
+    logger.info("Bot started successfully")
+    await app.idle()
+
+async def shutdown(signal, loop):
+    logger.info(f"Received exit signal {signal.name}...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop.stop()
+
 if __name__ == "__main__":
     logger.info("Bot is starting...")
     try:
-        app.run()
+        loop = asyncio.get_event_loop()
+        
+        # Register signal handlers
+        signals = (signal.SIGTERM, signal.SIGINT)
+        for s in signals:
+            loop.add_signal_handler(
+                s, 
+                lambda s=s: asyncio.create_task(shutdown(s, loop))
+            )
+            
+        # Start both bot and health check server
+        loop.create_task(run_web_server())
+        loop.create_task(run_bot())
+        
+        loop.run_forever()
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
+    finally:
+        loop.close()
+        logger.info("Successfully shutdown the bot.")

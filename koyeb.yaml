@@ -7,7 +7,17 @@ app:
         - name: PYTHONUNBUFFERED
           value: "1"
       ports:
-        - port: 8080
+        - port: 8000
+          protocol: tcp
+      healthCheck:
+        httpGet:
+          path: /health
+          port: 8000
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        timeoutSeconds: 5
+        successThreshold: 1
+        failureThreshold: 3
       command: python3 bot.py
       scale:
         horizontal:
